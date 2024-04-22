@@ -1,0 +1,137 @@
+﻿@page "/tasks"
+@using Everflow.ExceptionHandling.Middleware.Models
+@using System.Text.Json
+@using System.Text
+@using Microsoft.AspNetCore.SignalR.Client
+@using SignalRDemo.Models;
+@inject IHttpClientFactory _httpClientFactory
+@inject NavigationManager _navManager
+@rendermode InteractiveWebAssembly
+<PageTitle>Tasks</PageTitle>
+
+<h1>tasks</h1>
+
+<p>This component demonstrates fetching data from the server.</p>
+
+@if (eTasks == null || !isConnected)
+{
+    <p><em>Loading...</em></p>
+}
+else
+{
+    <button class="btn btn-primary" @onclick="(() => CreateNewUser(testUser))">Create Application</button>
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Key</th>
+                <th>Name</th>
+                <th>Id</th>
+                <th>State</th>
+                <th>Type</th>
+                <th>Creation Date</th>
+                <th>Variables</th>
+                <th>Review</th>
+
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var task in eTasks!)
+            {
+                <tr>
+                    <td>@task.TaskKey</td>
+                    <td>@task.TaskName</td>
+                    <td>@task.ElementId</td>
+                    <td>@task.State</td>
+                    <td>@task.Type</td>
+                    <td>@task.Creation!.Value.ToShortDateString()</td>
+                    <td>
+                        @foreach (var variable in task.Variables!)
+                        {
+                            <>@variable.Key @variable.Value </>
+                        }
+                    </td>
+                    <td>
+                        <button class="btn btn-primary" @onclick="(() => UserReviewAsync(task.TaskKey, true))">Approve</button>
+                        <button class="btn btn-primary" @onclick="(() => UserReviewAsync(task.TaskKey, false))">Decline</button>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    private List<WorkflowTask>? eTasks;
+    private HubConnection hubConnection;
+    public string testUser = "testUser";
+    protected override async Task OnInitializedAsync()
+    {
+        hubConnection = new HubConnectionBuilder()
+            .WithUrl(_navManager.ToAbsoluteUri("/workflowhub")).Build();
+
+        hubConnection.On<long>("applicationReviewed", async (taskKey) =>
+        {
+            await GetUserTasks();
+            await InvokeAsync(StateHasChanged);
+        });
+
+        hubConnection.On<bool>("applicationCreated", async (i) =>
+        {
+            
+            await GetUserTasks();
+            await InvokeAsync(StateHasChanged);
+        });
+
+        await hubConnection.StartAsync();
+
+        await GetUserTasks();
+    }
+
+    private async Task GetUserTasks()
+    {
+        using HttpClient client = _httpClientFactory.CreateClient("WorkflowService");
+
+        var response = await client.GetAsync($"https://localhost:7999/api/v1/tasks?page=1&pageSize=10");
+
+        response.EnsureSuccessStatusCode();
+
+        eTasks = (await response.Content.ReadFromJsonAsync<ResultModel<IEnumerable<WorkflowTask>>>())!.Data.ToList();
+    }
+
+    private async Task UserReviewAsync(long taskKey, bool approve)
+    {
+        var userReviewRequest = new ApplicationReviewRequest()
+            {
+                TaskKey = taskKey,
+                Approve = approve
+            };
+
+        var requestContent = new StringContent(JsonSerializer.Serialize(userReviewRequest), Encoding.UTF8, "application/json");
+
+        using HttpClient client = _httpClientFactory.CreateClient("WorkflowService");
+
+        var response = await client.PostAsync($"https://localhost:7999/ApplicationRequest?api-version=1", requestContent);
+
+        response.EnsureSuccessStatusCode();
+
+        await hubConnection.SendAsync("reviewApplication", taskKey);
+    }
+
+    private async Task CreateNewUser(string name)
+    {
+        var userApplicationRequest = new CreateApplicationRequest() { ApplicantName = name };
+
+        var requestContent = new StringContent(JsonSerializer.Serialize(userApplicationRequest), Encoding.UTF8, "application/json");
+
+        using HttpClient client = _httpClientFactory.CreateClient("WorkerService");
+
+        var response = await client.PostAsync($"/application", requestContent);
+
+        response.EnsureSuccessStatusCode();
+
+        await hubConnection.SendAsync("createApplication", true);
+    }
+
+    public bool isConnected => hubConnection.State == HubConnectionState.Connected;
+
+}
